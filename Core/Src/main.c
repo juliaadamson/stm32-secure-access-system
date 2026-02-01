@@ -23,6 +23,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include <string.h>   // add at top of file for strlen/strcmp
 
 /* USER CODE END Includes */
 
@@ -49,6 +50,8 @@ typedef enum
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+UART_HandleTypeDef huart2;
+
 /* Definitions for AccessControl */
 osThreadId_t AccessControlHandle;
 const osThreadAttr_t AccessControl_attributes = {
@@ -65,12 +68,18 @@ const osThreadAttr_t Button_attributes = {
 };
 /* USER CODE BEGIN PV */
 volatile AccessState_t accessState = STATE_LOCKED;
+uint8_t tx_buffer[27]="Welcome to BinaryUpdates!\n\r";
+uint8_t rx_idx;
+uint8_t rx_data[1];
+uint8_t rx_buffer[100];
+uint8_t transfer_cplt;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
 void AccessControlTask(void *argument);
 void ButtonTask(void *argument);
 
@@ -112,7 +121,10 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+
+  HAL_UART_Receive_IT(&huart2, rx_data, 1);
 
   /* USER CODE END 2 */
 
@@ -214,6 +226,54 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart2, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart2, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -228,9 +288,13 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5|GPIO_PIN_8|GPIO_PIN_10, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -238,12 +302,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PA5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5;
+  /*Configure GPIO pins : PA5 PA8 PA10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_8|GPIO_PIN_10;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB3 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -251,6 +322,69 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+
+
+void PrintMenu(void)
+{
+    const char *menu =
+        "\r\n=== Secure Access System ===\r\n"
+        "1 - Unlock door\r\n"
+        "2 - Lock door\r\n"
+        "3 - Status\r\n"
+        "> ";
+
+    HAL_UART_Transmit(&huart2, (uint8_t*)menu, strlen(menu), HAL_MAX_DELAY);
+}
+
+void ClearScreen(void)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t*)"\033[2J\033[H", 7, HAL_MAX_DELAY);
+}
+
+
+
+
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(huart);
+
+  /* NOTE : This function should not be modified, when the callback is needed,
+            the HAL_UART_RxCpltCallback can be implemented in the user file.
+   */
+
+  //uint8_t i;
+
+  if (huart->Instance == USART2)
+  {
+      // Ignore LF (10)
+      if (rx_data[0] == '\n')
+      {
+          // do nothing
+      }
+      // ENTER pressed (CR)
+      else if (rx_data[0] == '\r')
+      {
+          rx_buffer[rx_idx] = '\0';
+          rx_idx = 0;
+          transfer_cplt = 1;
+
+          HAL_UART_Transmit(&huart2, (uint8_t*)"\r\n", 2, HAL_MAX_DELAY);
+      }
+      else
+      {
+          if (rx_idx < sizeof(rx_buffer) - 1)
+          {
+              rx_buffer[rx_idx++] = rx_data[0];
+              HAL_UART_Transmit(&huart2, rx_data, 1, HAL_MAX_DELAY); // echo
+          }
+      }
+
+      HAL_UART_Receive_IT(&huart2, rx_data, 1);
+  }
+}
 
 /* USER CODE END 4 */
 
@@ -264,12 +398,76 @@ static void MX_GPIO_Init(void)
 void AccessControlTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
+    // Start in LOCKED state (choose your default)
+    accessState = STATE_LOCKED;
+
+    // Set LEDs to match default state
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);   // Red ON
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);  // Green OFF
+
+    ClearScreen();
+
+    // Print menu once at startup
+    PrintMenu();
 
   /* Infinite loop */
     for (;;)
     {
-    	printf("Locked\n");
-    	osDelay(2000);
+        // transfer_cplt is set to 1 in HAL_UART_RxCpltCallback() when user presses ENTER
+        if (transfer_cplt)
+        {
+            transfer_cplt = 0;
+
+            // User chose option 1: UNLOCK
+            if (strcmp((char*)rx_buffer, "1") == 0)
+            {
+                accessState = STATE_UNLOCKED;
+
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);     // Green ON
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);  // Red OFF
+
+                HAL_UART_Transmit(&huart2, (uint8_t*)"Access granted\r\n", 16, HAL_MAX_DELAY);
+
+            }
+            // User chose option 2: LOCK
+            else if (strcmp((char*)rx_buffer, "2") == 0)
+            {
+                accessState = STATE_LOCKED;
+
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);    // Red ON
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);   // Green OFF
+
+                HAL_UART_Transmit(&huart2, (uint8_t*)"Access refused\r\n", 16, HAL_MAX_DELAY);
+
+            }
+            // User chose option 3: STATUS
+            else if (strcmp((char*)rx_buffer, "3") == 0)
+            {
+                if (accessState == STATE_LOCKED)
+                {
+                    HAL_UART_Transmit(&huart2, (uint8_t*)"STATUS: LOCKED\r\n",
+                                      strlen("STATUS: LOCKED\r\n"),
+                                      HAL_MAX_DELAY);
+                }
+                else
+                {
+                    HAL_UART_Transmit(&huart2, (uint8_t*)"STATUS: UNLOCKED\r\n",
+                                      strlen("STATUS: UNLOCKED\r\n"),
+                                      HAL_MAX_DELAY);
+                }
+            }
+
+            else
+            {
+            	HAL_UART_Transmit(&huart2, (uint8_t*)"Invalid option. Type 1, 2, or 3 then press ENTER.\r\n", 16, HAL_MAX_DELAY);
+            }
+
+            // Re-print menu after handling command
+            osDelay(3000);
+            ClearScreen();
+            PrintMenu();
+        }
+        osDelay(10);
     }
 
   // In case we exit from task loop
@@ -338,6 +536,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
+
 
   /* USER CODE END Callback 1 */
 }
