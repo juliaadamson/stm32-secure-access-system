@@ -66,6 +66,13 @@ const osThreadAttr_t Button_attributes = {
   .priority = (osPriority_t) osPriorityAboveNormal,
   .stack_size = 128 * 4
 };
+/* Definitions for KeyboardTask */
+osThreadId_t KeyboardTaskHandle;
+const osThreadAttr_t KeyboardTask_attributes = {
+  .name = "KeyboardTask",
+  .priority = (osPriority_t) osPriorityHigh,
+  .stack_size = 128 * 4
+};
 /* USER CODE BEGIN PV */
 volatile AccessState_t accessState = STATE_LOCKED;
 uint8_t tx_buffer[27]="Welcome to BinaryUpdates!\n\r";
@@ -73,6 +80,16 @@ uint8_t rx_idx;
 uint8_t rx_data[1];
 uint8_t rx_buffer[100];
 uint8_t transfer_cplt;
+
+
+
+// Keypad character map corresponding to your layout
+const char keypad_map[4][4] = {
+    {'1','4','7','*'},
+    {'2','5','8','0'},
+    {'3','6','9','#'},
+    {'A','B','C','D'}
+};
 
 /* USER CODE END PV */
 
@@ -82,6 +99,7 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 void AccessControlTask(void *argument);
 void ButtonTask(void *argument);
+void KeyboardInput(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -153,6 +171,9 @@ int main(void)
 
   /* creation of Button */
   ButtonHandle = osThreadNew(ButtonTask, NULL, &Button_attributes);
+
+  /* creation of KeyboardTask */
+  KeyboardTaskHandle = osThreadNew(KeyboardInput, NULL, &KeyboardTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -291,10 +312,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5|GPIO_PIN_8|GPIO_PIN_10, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5|GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9
+                          |GPIO_PIN_10, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3|GPIO_PIN_6, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -302,15 +327,42 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA5 PA8 PA10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_8|GPIO_PIN_10;
+  /*Configure GPIO pins : PC0 PC1 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PA4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PA5 PA7 PA8 PA9
+                           PA10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9
+                          |GPIO_PIN_10;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  /*Configure GPIO pin : PB0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PC7 */
+  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB3 PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -323,6 +375,40 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+
+
+/**
+  * @brief  Scans the 4x4 keypad to find which key is pressed.
+  * @retval The character of the pressed key, or '\0' (null character) if no key is pressed.
+  */
+char scan_keypad(void)
+{
+    // Array of row pins for easier iteration
+    GPIO_TypeDef* row_ports[] = {GPIOA, GPIOC, GPIOB, GPIOA};
+    uint16_t row_pins[] = {GPIO_PIN_9, GPIO_PIN_7, GPIO_PIN_6, GPIO_PIN_7};
+
+    for (int row = 0; row < 4; row++)
+    {
+        // Drive all rows HIGH first
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
+
+        // Drive the current row LOW
+        HAL_GPIO_WritePin(row_ports[row], row_pins[row], GPIO_PIN_RESET);
+
+        // Check columns for a LOW signal.
+        // A LOW signal means a key in this row has been pressed.
+        if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_RESET) return keypad_map[row][0];
+        if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4) == GPIO_PIN_RESET) return keypad_map[row][1];
+        if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_1) == GPIO_PIN_RESET) return keypad_map[row][2];
+        if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_RESET) return keypad_map[row][3];
+    }
+
+    // If we get here, no key was pressed
+    return 99;
+}
 
 
 void PrintMenu(void)
@@ -516,6 +602,47 @@ void ButtonTask(void *argument)
   }
   osThreadTerminate(NULL);
   /* USER CODE END ButtonTask */
+}
+
+/* USER CODE BEGIN Header_KeyboardInput */
+/**
+* @brief Function implementing the KeyboardTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_KeyboardInput */
+void KeyboardInput(void *argument)
+{
+  /* USER CODE BEGIN KeyboardInput */
+
+    char key;
+
+    HAL_UART_Transmit(&huart2,
+        (uint8_t*)"Keypad test ready\r\n",
+        strlen("Keypad test ready\r\n"),
+        HAL_MAX_DELAY);
+
+  /* Infinite loop */
+    for (;;)
+    {
+        key = scan_keypad();
+
+        if (key != 99)   // 99 = no key pressed
+        {
+            char msg[20];
+            snprintf(msg, sizeof(msg), "Key: %c\r\n", key);
+
+            HAL_UART_Transmit(&huart2,
+                (uint8_t*)msg,
+                strlen(msg),
+                HAL_MAX_DELAY);
+
+            osDelay(300);  // simple debounce so it doesn't spam
+        }
+
+        osDelay(20);
+    }
+  /* USER CODE END KeyboardInput */
 }
 
 /**
