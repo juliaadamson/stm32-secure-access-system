@@ -50,6 +50,8 @@ typedef enum
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim2;
+
 UART_HandleTypeDef huart2;
 
 /* Definitions for AccessControl */
@@ -71,6 +73,13 @@ osThreadId_t KeyboardTaskHandle;
 const osThreadAttr_t KeyboardTask_attributes = {
   .name = "KeyboardTask",
   .priority = (osPriority_t) osPriorityHigh,
+  .stack_size = 128 * 4
+};
+/* Definitions for ServoMotor */
+osThreadId_t ServoMotorHandle;
+const osThreadAttr_t ServoMotor_attributes = {
+  .name = "ServoMotor",
+  .priority = (osPriority_t) osPriorityHigh1,
   .stack_size = 128 * 4
 };
 /* USER CODE BEGIN PV */
@@ -97,9 +106,11 @@ const char keypad_map[4][4] = {
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_TIM2_Init(void);
 void AccessControlTask(void *argument);
 void ButtonTask(void *argument);
 void KeyboardInput(void *argument);
+void ServoTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -140,7 +151,10 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
 
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
 
@@ -174,6 +188,9 @@ int main(void)
 
   /* creation of KeyboardTask */
   KeyboardTaskHandle = osThreadNew(KeyboardInput, NULL, &KeyboardTask_attributes);
+
+  /* creation of ServoMotor */
+  ServoMotorHandle = osThreadNew(ServoTask, NULL, &ServoMotor_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -244,6 +261,65 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 340-1;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 9999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+  HAL_TIM_MspPostInit(&htim2);
+
 }
 
 /**
@@ -643,6 +719,31 @@ void KeyboardInput(void *argument)
         osDelay(20);
     }
   /* USER CODE END KeyboardInput */
+}
+
+/* USER CODE BEGIN Header_ServoTask */
+/**
+* @brief Function implementing the ServoMotor thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_ServoTask */
+void ServoTask(void *argument)
+{
+  /* USER CODE BEGIN ServoTask */
+  /* Infinite loop */
+  for(;;)
+  {
+      __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_2, 250);
+      osDelay(1000);
+      __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_2, 750);
+      osDelay(1000);
+      __HAL_TIM_SET_COMPARE(&htim2,TIM_CHANNEL_2, 1250);
+      osDelay(1000);
+
+
+  }
+  /* USER CODE END ServoTask */
 }
 
 /**
