@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>   // add at top of file for strlen/strcmp
+#include "LCD1602.h"
 
 /* USER CODE END Includes */
 
@@ -40,7 +41,7 @@ typedef enum
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define PIN_LENGTH 4
 
 /* USER CODE END PD */
 
@@ -50,6 +51,7 @@ typedef enum
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
@@ -90,6 +92,9 @@ uint8_t rx_data[1];
 uint8_t rx_buffer[100];
 uint8_t transfer_cplt;
 
+volatile uint8_t pin_ready = 0;
+char pin_entered[PIN_LENGTH + 1] = {0};
+
 
 
 // Keypad character map corresponding to your layout
@@ -107,6 +112,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_TIM1_Init(void);
 void AccessControlTask(void *argument);
 void ButtonTask(void *argument);
 void KeyboardInput(void *argument);
@@ -139,6 +145,9 @@ int main(void)
 
   /* USER CODE BEGIN Init */
 
+
+
+
   /* USER CODE END Init */
 
   /* Configure the system clock */
@@ -152,10 +161,25 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
 
+  HAL_UART_Receive_IT(&huart2, rx_data, 1);
+
+  HAL_TIM_Base_Start(&htim1);
+
+  lcd_init();
+  lcd_put_cur(0 ,0);
+  lcd_send_string("HELLO");
+
+  lcd_put_cur(1,0);
+  lcd_send_string("HELP");
+  HAL_Delay(3000);
+  lcd_clear();
+
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
 
   /* USER CODE END 2 */
@@ -261,6 +285,53 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 170-1;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 65535;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
 }
 
 /**
@@ -384,18 +455,20 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5|GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9
-                          |GPIO_PIN_10, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0|GPIO_PIN_5|GPIO_PIN_7|GPIO_PIN_8
+                          |GPIO_PIN_9|GPIO_PIN_10, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_7, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3|GPIO_PIN_6, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_10|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5
+                          |GPIO_PIN_6, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -409,20 +482,27 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : PA0 PA5 PA7 PA8
+                           PA9 PA10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_5|GPIO_PIN_7|GPIO_PIN_8
+                          |GPIO_PIN_9|GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
   /*Configure GPIO pin : PA4 */
   GPIO_InitStruct.Pin = GPIO_PIN_4;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PA5 PA7 PA8 PA9
-                           PA10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9
-                          |GPIO_PIN_10;
+  /*Configure GPIO pins : PC4 PC5 PC7 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_7;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PB0 */
   GPIO_InitStruct.Pin = GPIO_PIN_0;
@@ -430,15 +510,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PC7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB3 PB6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_6;
+  /*Configure GPIO pins : PB10 PB3 PB4 PB5
+                           PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5
+                          |GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -575,6 +650,18 @@ void AccessControlTask(void *argument)
   /* Infinite loop */
     for (;;)
     {
+    	if (pin_ready)
+    	{
+    	    pin_ready = 0;
+
+    	    // For now just print it (later we'll validate)
+    	    char msg[64];
+    	    snprintf(msg, sizeof(msg), "\r\nGot PIN: %s\r\n", pin_entered);
+    	    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+
+    	    // Next: check if it matches allowed PINs, then unlock/lock
+    	}
+
         // transfer_cplt is set to 1 in HAL_UART_RxCpltCallback() when user presses ENTER
         if (transfer_cplt)
         {
@@ -691,29 +778,64 @@ void KeyboardInput(void *argument)
 {
   /* USER CODE BEGIN KeyboardInput */
 
-    char key;
+	char pin[PIN_LENGTH + 1] = {0};
+	uint8_t idx = 0;
 
-    HAL_UART_Transmit(&huart2,
-        (uint8_t*)"Keypad test ready\r\n",
-        strlen("Keypad test ready\r\n"),
-        HAL_MAX_DELAY);
+    const char *banner = "Enter 4-digit PIN on keypad. #=Enter, *=Clear\r\n> ";
+    HAL_UART_Transmit(&huart2, (uint8_t*)banner, strlen(banner), HAL_MAX_DELAY);
 
   /* Infinite loop */
     for (;;)
     {
-        key = scan_keypad();
 
-        if (key != 99)   // 99 = no key pressed
+        char key = scan_keypad();
+
+        if (key != 99)  // 99 = no key pressed (your function)
         {
-            char msg[20];
-            snprintf(msg, sizeof(msg), "Key: %c\r\n", key);
+            if (key >= '0' && key <= '9')
+            {
+                if (idx < PIN_LENGTH)
+                {
+                    pin[idx++] = key;
+                    pin[idx] = '\0';
 
-            HAL_UART_Transmit(&huart2,
-                (uint8_t*)msg,
-                strlen(msg),
-                HAL_MAX_DELAY);
+                    // mask output
+                    HAL_UART_Transmit(&huart2, (uint8_t*)"*", 1, HAL_MAX_DELAY);
+                }
+            }
+            else if (key == '*')
+            {
+                idx = 0;
+                memset(pin, 0, sizeof(pin));
+                HAL_UART_Transmit(&huart2, (uint8_t*)"\r\nCleared\r\n> ",
+                                  strlen("\r\nCleared\r\n> "),
+                                  HAL_MAX_DELAY);
+            }
+            else if (key == '#')
+            {
+                if (idx == PIN_LENGTH)
+                {
+                    // Only write the shared globals when we're ready to submit
+                    strcpy(pin_entered, pin);
+                    pin_ready = 1;
 
-            osDelay(300);  // simple debounce so it doesn't spam
+                    HAL_UART_Transmit(&huart2, (uint8_t*)"\r\nPIN submitted\r\n> ",
+                                      strlen("\r\nPIN submitted\r\n> "),
+                                      HAL_MAX_DELAY);
+                }
+                else
+                {
+                    HAL_UART_Transmit(&huart2, (uint8_t*)"\r\nNeed 4 digits\r\n> ",
+                                      strlen("\r\nNeed 4 digits\r\n> "),
+                                      HAL_MAX_DELAY);
+                }
+
+                // reset local entry buffer
+                idx = 0;
+                memset(pin, 0, sizeof(pin));
+            }
+
+            osDelay(250); // debounce / prevents repeats
         }
 
         osDelay(20);
