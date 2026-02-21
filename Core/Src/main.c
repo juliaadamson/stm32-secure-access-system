@@ -84,6 +84,13 @@ const osThreadAttr_t ServoMotor_attributes = {
   .priority = (osPriority_t) osPriorityHigh1,
   .stack_size = 128 * 4
 };
+/* Definitions for LCDtask */
+osThreadId_t LCDtaskHandle;
+const osThreadAttr_t LCDtask_attributes = {
+  .name = "LCDtask",
+  .priority = (osPriority_t) osPriorityHigh,
+  .stack_size = 128 * 4
+};
 /* USER CODE BEGIN PV */
 volatile AccessState_t accessState = STATE_LOCKED;
 uint8_t tx_buffer[27]="Welcome to BinaryUpdates!\n\r";
@@ -117,6 +124,7 @@ void AccessControlTask(void *argument);
 void ButtonTask(void *argument);
 void KeyboardInput(void *argument);
 void ServoTask(void *argument);
+void lcdTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -170,14 +178,10 @@ int main(void)
 
   HAL_TIM_Base_Start(&htim1);
 
-  lcd_init();
-  lcd_put_cur(0 ,0);
-  lcd_send_string("HELLO");
 
-  lcd_put_cur(1,0);
-  lcd_send_string("HELP");
-  HAL_Delay(3000);
-  lcd_clear();
+
+
+
 
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
   HAL_UART_Receive_IT(&huart2, rx_data, 1);
@@ -215,6 +219,9 @@ int main(void)
 
   /* creation of ServoMotor */
   ServoMotorHandle = osThreadNew(ServoTask, NULL, &ServoMotor_attributes);
+
+  /* creation of LCDtask */
+  LCDtaskHandle = osThreadNew(lcdTask, NULL, &LCDtask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -528,6 +535,7 @@ static void MX_GPIO_Init(void)
 
 
 
+
 /**
   * @brief  Scans the 4x4 keypad to find which key is pressed.
   * @retval The character of the pressed key, or '\0' (null character) if no key is pressed.
@@ -565,7 +573,7 @@ char scan_keypad(void)
 void PrintMenu(void)
 {
     const char *menu =
-        "\r\n=== Secure Access System ===\r\n"
+        "\r\n--- Secure Access System ---\r\n\n"
         "1 - Unlock door\r\n"
         "2 - Lock door\r\n"
         "3 - Status\r\n"
@@ -577,6 +585,29 @@ void PrintMenu(void)
 void ClearScreen(void)
 {
     HAL_UART_Transmit(&huart2, (uint8_t*)"\033[2J\033[H", 7, HAL_MAX_DELAY);
+}
+
+static void LCD_ShowState(AccessState_t state)
+{
+    lcd_clear();
+    lcd_put_cur(0, 0);
+
+    if (state == STATE_LOCKED)
+    {
+    	lcd_clear();
+    	lcd_put_cur(0, 0);
+        lcd_send_string(" ACCESS  SYSTEM");
+        lcd_put_cur(1, 0);
+        lcd_send_string("     LOCKED");
+    }
+    else
+    {
+    	lcd_clear();
+    	lcd_put_cur(0, 0);
+        lcd_send_string(" ACCESS  SYSTEM  ");
+        lcd_put_cur(1, 0);
+        lcd_send_string("    UNLOCKED");
+    }
 }
 
 
@@ -637,6 +668,11 @@ void AccessControlTask(void *argument)
   /* USER CODE BEGIN 5 */
     // Start in LOCKED state (choose your default)
     accessState = STATE_LOCKED;
+    //lcd_clear();
+    //lcd_put_cur(0, 0);
+    //lcd_send_string("HELLO");
+    //HAL_Delay(2000);
+
 
     // Set LEDs to match default state
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);   // Red ON
@@ -672,10 +708,12 @@ void AccessControlTask(void *argument)
             {
                 accessState = STATE_UNLOCKED;
 
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);     // Green ON
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);  // Red OFF
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);     // Green on
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);   // Red off
 
                 HAL_UART_Transmit(&huart2, (uint8_t*)"Access granted\r\n", 16, HAL_MAX_DELAY);
+
+
 
             }
             // User chose option 2: LOCK
@@ -683,8 +721,8 @@ void AccessControlTask(void *argument)
             {
                 accessState = STATE_LOCKED;
 
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);    // Red ON
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);   // Green OFF
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);     // Red on
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);   // Green off
 
                 HAL_UART_Transmit(&huart2, (uint8_t*)"Access refused\r\n", 16, HAL_MAX_DELAY);
 
@@ -710,6 +748,7 @@ void AccessControlTask(void *argument)
             {
             	HAL_UART_Transmit(&huart2, (uint8_t*)"Invalid option. Type 1, 2, or 3 then press ENTER.\r\n", 16, HAL_MAX_DELAY);
             }
+            LCD_ShowState(accessState);
 
             // Re-print menu after handling command
             osDelay(3000);
@@ -866,6 +905,35 @@ void ServoTask(void *argument)
 
   }
   /* USER CODE END ServoTask */
+}
+
+/* USER CODE BEGIN Header_lcdTask */
+/**
+* @brief Function implementing the LCDtask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_lcdTask */
+void lcdTask(void *argument)
+{
+  /* USER CODE BEGIN lcdTask */
+  /* Infinite loop */
+  lcd_init();
+
+  AccessState_t lastState = (AccessState_t)99;
+
+
+  for(;;)
+  {
+	  if (accessState != lastState)
+	  {
+		  lastState = accessState;
+		  LCD_ShowState(lastState);
+	  }
+
+    osDelay(50);
+  }
+  /* USER CODE END lcdTask */
 }
 
 /**

@@ -20,6 +20,7 @@
 //#define RW_GPIO_Port GPIOA
 #define EN_Pin GPIO_PIN_4
 #define EN_GPIO_Port GPIOC
+
 #define D4_Pin GPIO_PIN_10
 #define D4_GPIO_Port GPIOB
 #define D5_Pin GPIO_PIN_4
@@ -29,8 +30,10 @@
 #define D7_Pin GPIO_PIN_5
 #define D7_GPIO_Port GPIOC
 
+
 /****************** define the timer handler below  **************/
 #define timer htim1
+
 
 
 extern TIM_HandleTypeDef timer;
@@ -44,7 +47,10 @@ void delay (uint16_t us)
 
 void send_to_lcd (char data, int rs)
 {
-	HAL_GPIO_WritePin(RS_GPIO_Port, RS_Pin, rs);  // rs = 1 for data, rs=0 for command
+	//HAL_GPIO_WritePin(RS_GPIO_Port, RS_Pin, 1);  // rs = 1 for data, rs=0 for command
+
+	HAL_GPIO_WritePin(RS_GPIO_Port, RS_Pin, rs ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
 
 	/* write the data to the respective pin */
 	HAL_GPIO_WritePin(D7_GPIO_Port, D7_Pin, ((data>>3)&0x01));
@@ -57,9 +63,9 @@ void send_to_lcd (char data, int rs)
 	 * if the LCD still doesn't work, increase the delay to 50, 80 or 100..
 	 */
 	HAL_GPIO_WritePin(EN_GPIO_Port, EN_Pin, 1);
-	HAL_Delay (20);
+	delay(50);
 	HAL_GPIO_WritePin(EN_GPIO_Port, EN_Pin, 0);
-	HAL_Delay (20);
+	delay(20);
 }
 
 void lcd_send_cmd (char cmd)
