@@ -34,6 +34,7 @@
 #define PIN_LENGTH 4
 #define MAX_NAME_LEN 16
 #define MAX_USERS 10
+#define LOCKOUT_MS 10000   // 10 seconds
 
 /* USER CODE END PD */
 
@@ -50,6 +51,12 @@ typedef struct {
     char name[MAX_NAME_LEN + 1];       // "Julia"
     uint8_t active;                    // 1 = slot used
 } UserAccount_t;
+typedef enum
+{
+    UART_MODE_MENU,
+    UART_MODE_ADD_NAME,
+    UART_MODE_ADD_PIN
+} UartMode_t;
 
 /* USER CODE END PTD */
 
@@ -116,6 +123,14 @@ uint8_t transfer_cplt;
 volatile uint8_t pin_ready = 0;
 char pin_entered[PIN_LENGTH + 1] = {0};
 
+volatile uint8_t enteringPin = 0;
+volatile uint8_t failedAttempts = 0;
+volatile uint8_t lockoutActive = 0;
+uint32_t lockoutEndTick = 0;
+
+volatile UartMode_t uartMode = UART_MODE_MENU;
+char newUserName[MAX_NAME_LEN + 1] = {0};
+
 
 
 // Keypad character map corresponding to your layout
@@ -141,6 +156,8 @@ void ServoTask(void *argument);
 void lcdTask(void *argument);
 
 static UserAccount_t userDb[MAX_USERS];
+static int Db_AddUser(const char *name, const char *pin);
+static void UART_ShowUsers(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -548,9 +565,74 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+static int Db_AddUser(const char *name, const char *pin)
+{
+    // check for duplicate PIN
+    for (int i = 0; i < MAX_USERS; i++)
+    {
+        if (userDb[i].active && strcmp(userDb[i].pin, pin) == 0)
+        {
+            return -2;   // duplicate PIN
+        }
+    }
 
+    // find empty slot
+    for (int i = 0; i < MAX_USERS; i++)
+    {
+        if (!userDb[i].active)
+        {
+            strncpy(userDb[i].name, name, MAX_NAME_LEN);
+            userDb[i].name[MAX_NAME_LEN] = '\0';
 
+            strncpy(userDb[i].pin, pin, PIN_LENGTH);
+            userDb[i].pin[PIN_LENGTH] = '\0';
 
+            userDb[i].active = 1;
+            return i;
+        }
+    }
+
+    return -1;   // no free slot
+}
+
+static void UART_ShowUsers(void)
+{
+    char line[64];
+
+    HAL_UART_Transmit(&huart2,
+                      (uint8_t*)"\r\n--- User List ---\r\n",
+                      strlen("\r\n--- User List ---\r\n"),
+                      HAL_MAX_DELAY);
+
+    for (int i = 0; i < MAX_USERS; i++)
+    {
+        if (userDb[i].active)
+        {
+            snprintf(line, sizeof(line), "%d. %s - PIN: %s\r\n",
+                     i + 1, userDb[i].name, userDb[i].pin);
+            HAL_UART_Transmit(&huart2, (uint8_t*)line, strlen(line), HAL_MAX_DELAY);
+        }
+    }
+}
+
+static void LCD_ShowMaskedPin(uint8_t count)
+{
+    char stars[PIN_LENGTH + 1] = {0};
+
+    for (uint8_t i = 0; i < count && i < PIN_LENGTH; i++)
+    {
+        stars[i] = '*';
+    }
+
+    lcd_clear();
+    lcd_put_cur(0, 0);
+    lcd_send_string("ENTER PIN:");
+
+    lcd_put_cur(1, 0);
+    lcd_send_string("                ");
+    lcd_put_cur(1, 0);
+    lcd_send_string(stars);
+}
 
 /**
   * @brief  Scans the 4x4 keypad to find which key is pressed.
@@ -593,6 +675,8 @@ void PrintMenu(void)
         "1 - Unlock door\r\n"
         "2 - Lock door\r\n"
         "3 - Status\r\n"
+        "4 - Add user\r\n"
+        "5 - View users\r\n"
         "> ";
 
     HAL_UART_Transmit(&huart2, (uint8_t*)menu, strlen(menu), HAL_MAX_DELAY);
@@ -712,138 +796,317 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 void AccessControlTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-    // Start in LOCKED state (choose your default)
     accessState = STATE_LOCKED;
-
-    //lcd_put_cur(0, 0);
-    //lcd_send_string("HELLO");
-    //HAL_Delay(2000);
 
     lcd_init();
     lcd_clear();
     Db_Init();
 
     // Set LEDs to match default state
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);   // Red ON
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);    // Red ON
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);  // Green OFF
 
     ClearScreen();
-
-    // Print menu once at startup
     PrintMenu();
 
-  /* Infinite loop */
+    uint32_t lastRemaining = 999;
+
     for (;;)
     {
-    	if (pin_ready)
-    	{
-    	    pin_ready = 0;
+        // Handle lockout countdown
+        if (lockoutActive)
+        {
+            uint32_t now = HAL_GetTick();
 
-    	    int userIdx = Db_FindByPin(pin_entered);
+            if (now >= lockoutEndTick)
+            {
+                lockoutActive = 0;
+                failedAttempts = 0;
+                lastRemaining = 999;
+                enteringPin = 0;
 
-    	    if (userIdx >= 0)
-    	    {
-    	        accessState = STATE_UNLOCKED;
+                lcd_clear();
+                lcd_put_cur(0, 0);
+                lcd_send_string("LOCKOUT ENDED");
+                lcd_put_cur(1, 0);
+                lcd_send_string("Try again");
 
-    	        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);     // Green ON
-    	        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);   // Red OFF
+                HAL_UART_Transmit(&huart2,
+                                  (uint8_t*)"\r\nLockout ended\r\n",
+                                  strlen("\r\nLockout ended\r\n"),
+                                  HAL_MAX_DELAY);
 
-    	        // LCD
-    	        lcd_clear();
-    	        lcd_put_cur(0,0);
-    	        lcd_send_string("ACCESS GRANTED");
-    	        lcd_put_cur(1,0);
-    	        lcd_send_string(userDb[userIdx].name);
+                osDelay(1500);
+                LCD_ShowState(accessState);
+                PrintMenu();
+            }
+            else
+            {
+                uint32_t remaining = (lockoutEndTick - now + 999) / 1000;
 
-    	        // UART
-    	        char msg[64];
-    	        snprintf(msg, sizeof(msg), "\r\nWelcome %s\r\n", userDb[userIdx].name);
-    	        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-    	    }
-    	    else
-    	    {
-    	        accessState = STATE_LOCKED;
+                if (remaining != lastRemaining)
+                {
+                    lastRemaining = remaining;
 
-    	        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);     // Red ON
-    	        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);   // Green OFF
+                    lcd_clear();
+                    lcd_put_cur(0, 0);
+                    lcd_send_string("LOCKED OUT");
 
-    	        lcd_clear();
-    	        lcd_put_cur(0,0);
-    	        lcd_send_string("ACCESS DENIED");
-    	        lcd_put_cur(1,0);
-    	        lcd_send_string("Try again");
+                    char line[17];
+                    snprintf(line, sizeof(line), "Wait %lus", remaining);
+                    lcd_put_cur(1, 0);
+                    lcd_send_string("                ");
+                    lcd_put_cur(1, 0);
+                    lcd_send_string(line);
+                }
 
-    	        HAL_UART_Transmit(&huart2,
-    	                          (uint8_t*)"\r\nAccess denied\r\n",
-    	                          strlen("\r\nAccess denied\r\n"),
-    	                          HAL_MAX_DELAY);
-    	    }
+                osDelay(100);
+                continue;
+            }
+        }
 
-    	    PrintMenu();
-    	}
+        // Handle submitted keypad PIN
+        if (pin_ready)
+        {
+            pin_ready = 0;
+            enteringPin = 0;
 
-        // transfer_cplt is set to 1 in HAL_UART_RxCpltCallback() when user presses ENTER
+            int userIdx = Db_FindByPin(pin_entered);
+
+            if (userIdx >= 0)
+            {
+                failedAttempts = 0;
+                accessState = STATE_UNLOCKED;
+
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);     // Green ON
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);   // Red OFF
+
+                lcd_clear();
+                lcd_put_cur(0, 0);
+                lcd_send_string("ACCESS GRANTED");
+                lcd_put_cur(1, 0);
+                lcd_send_string(userDb[userIdx].name);
+
+                char msg[64];
+                snprintf(msg, sizeof(msg), "\r\nWelcome %s\r\n", userDb[userIdx].name);
+                HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+
+                osDelay(1500);
+                LCD_ShowState(accessState);
+                PrintMenu();
+            }
+            else
+            {
+                accessState = STATE_LOCKED;
+                failedAttempts++;
+
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);     // Red ON
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);   // Green OFF
+
+                if (failedAttempts >= 3)
+                {
+                    lockoutActive = 1;
+                    lockoutEndTick = HAL_GetTick() + LOCKOUT_MS;
+                    lastRemaining = 999;
+
+                    lcd_clear();
+                    lcd_put_cur(0, 0);
+                    lcd_send_string("LOCKED OUT");
+                    lcd_put_cur(1, 0);
+                    lcd_send_string("Wait 10s");
+
+                    HAL_UART_Transmit(&huart2,
+                                      (uint8_t*)"\r\nToo many failed attempts. System locked for 10 seconds.\r\n",
+                                      strlen("\r\nToo many failed attempts. System locked for 10 seconds.\r\n"),
+                                      HAL_MAX_DELAY);
+
+                    osDelay(1000);
+                }
+                else
+                {
+                    lcd_clear();
+                    lcd_put_cur(0, 0);
+                    lcd_send_string("ACCESS DENIED");
+
+                    char line[17];
+                    snprintf(line, sizeof(line), "Attempt %d of 3", failedAttempts);
+                    lcd_put_cur(1, 0);
+                    lcd_send_string("                ");
+                    lcd_put_cur(1, 0);
+                    lcd_send_string(line);
+
+                    char msg[64];
+                    snprintf(msg, sizeof(msg), "\r\nAccess denied (%d/3)\r\n", failedAttempts);
+                    HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+
+                    osDelay(1500);
+                    LCD_ShowState(accessState);
+                    PrintMenu();
+                }
+            }
+        }
+
         if (transfer_cplt)
         {
             transfer_cplt = 0;
 
-            // User chose option 1: UNLOCK
-            if (strcmp((char*)rx_buffer, "1") == 0)
+            if (uartMode == UART_MODE_MENU)
             {
-                accessState = STATE_UNLOCKED;
-
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);     // Green on
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);   // Red off
-
-                HAL_UART_Transmit(&huart2, (uint8_t*)"Access granted\r\n", 16, HAL_MAX_DELAY);
-
-
-
-            }
-            // User chose option 2: LOCK
-            else if (strcmp((char*)rx_buffer, "2") == 0)
-            {
-                accessState = STATE_LOCKED;
-
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);     // Red on
-                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);   // Green off
-
-                HAL_UART_Transmit(&huart2, (uint8_t*)"Access refused\r\n", 16, HAL_MAX_DELAY);
-
-            }
-            // User chose option 3: STATUS
-            else if (strcmp((char*)rx_buffer, "3") == 0)
-            {
-                if (accessState == STATE_LOCKED)
+                if (strcmp((char*)rx_buffer, "1") == 0)
                 {
-                    HAL_UART_Transmit(&huart2, (uint8_t*)"STATUS: LOCKED\r\n",
-                                      strlen("STATUS: LOCKED\r\n"),
+                    accessState = STATE_UNLOCKED;
+
+                    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
+                    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
+
+                    HAL_UART_Transmit(&huart2,
+                                      (uint8_t*)"Access granted\r\n",
+                                      strlen("Access granted\r\n"),
+                                      HAL_MAX_DELAY);
+
+                    LCD_ShowState(accessState);
+                    osDelay(1000);
+                    ClearScreen();
+                    PrintMenu();
+                }
+                else if (strcmp((char*)rx_buffer, "2") == 0)
+                {
+                    accessState = STATE_LOCKED;
+
+                    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
+                    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
+
+                    HAL_UART_Transmit(&huart2,
+                                      (uint8_t*)"Access refused\r\n",
+                                      strlen("Access refused\r\n"),
+                                      HAL_MAX_DELAY);
+
+                    LCD_ShowState(accessState);
+                    osDelay(1000);
+                    ClearScreen();
+                    PrintMenu();
+                }
+                else if (strcmp((char*)rx_buffer, "3") == 0)
+                {
+                    if (accessState == STATE_LOCKED)
+                    {
+                        HAL_UART_Transmit(&huart2,
+                                          (uint8_t*)"STATUS: LOCKED\r\n",
+                                          strlen("STATUS: LOCKED\r\n"),
+                                          HAL_MAX_DELAY);
+                    }
+                    else
+                    {
+                        HAL_UART_Transmit(&huart2,
+                                          (uint8_t*)"STATUS: UNLOCKED\r\n",
+                                          strlen("STATUS: UNLOCKED\r\n"),
+                                          HAL_MAX_DELAY);
+                    }
+
+                    PrintMenu();
+                }
+                else if (strcmp((char*)rx_buffer, "4") == 0)
+                {
+                    uartMode = UART_MODE_ADD_NAME;
+
+                    HAL_UART_Transmit(&huart2,
+                                      (uint8_t*)"\r\nEnter new user name: ",
+                                      strlen("\r\nEnter new user name: "),
+                                      HAL_MAX_DELAY);
+                }
+                else if (strcmp((char*)rx_buffer, "5") == 0)
+                {
+                    UART_ShowUsers();
+                    PrintMenu();
+                }
+                else
+                {
+                    HAL_UART_Transmit(&huart2,
+                                      (uint8_t*)"Invalid option. Type 1, 2, 3, 4, or 5 then press ENTER.\r\n",
+                                      strlen("Invalid option. Type 1, 2, 3, 4, or 5 then press ENTER.\r\n"),
+                                      HAL_MAX_DELAY);
+                    PrintMenu();
+                }
+            }
+            else if (uartMode == UART_MODE_ADD_NAME)
+            {
+                strncpy(newUserName, (char*)rx_buffer, MAX_NAME_LEN);
+                newUserName[MAX_NAME_LEN] = '\0';
+
+                uartMode = UART_MODE_ADD_PIN;
+
+                HAL_UART_Transmit(&huart2,
+                                  (uint8_t*)"Enter 4-digit PIN: ",
+                                  strlen("Enter 4-digit PIN: "),
+                                  HAL_MAX_DELAY);
+            }
+            else if (uartMode == UART_MODE_ADD_PIN)
+            {
+                if (strlen((char*)rx_buffer) != PIN_LENGTH)
+                {
+                    HAL_UART_Transmit(&huart2,
+                                      (uint8_t*)"\r\nPIN must be exactly 4 digits.\r\nEnter 4-digit PIN: ",
+                                      strlen("\r\nPIN must be exactly 4 digits.\r\nEnter 4-digit PIN: "),
                                       HAL_MAX_DELAY);
                 }
                 else
                 {
-                    HAL_UART_Transmit(&huart2, (uint8_t*)"STATUS: UNLOCKED\r\n",
-                                      strlen("STATUS: UNLOCKED\r\n"),
-                                      HAL_MAX_DELAY);
+                    uint8_t valid = 1;
+                    for (int i = 0; i < PIN_LENGTH; i++)
+                    {
+                        if (rx_buffer[i] < '0' || rx_buffer[i] > '9')
+                        {
+                            valid = 0;
+                            break;
+                        }
+                    }
+
+                    if (!valid)
+                    {
+                        HAL_UART_Transmit(&huart2,
+                                          (uint8_t*)"\r\nPIN must contain digits only.\r\nEnter 4-digit PIN: ",
+                                          strlen("\r\nPIN must contain digits only.\r\nEnter 4-digit PIN: "),
+                                          HAL_MAX_DELAY);
+                    }
+                    else
+                    {
+                        int result = Db_AddUser(newUserName, (char*)rx_buffer);
+
+                        if (result >= 0)
+                        {
+                            char msg[64];
+                            snprintf(msg, sizeof(msg), "\r\nUser '%s' added successfully.\r\n", newUserName);
+                            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+                        }
+                        else if (result == -2)
+                        {
+                            HAL_UART_Transmit(&huart2,
+                                              (uint8_t*)"\r\nThat PIN is already in use.\r\n",
+                                              strlen("\r\nThat PIN is already in use.\r\n"),
+                                              HAL_MAX_DELAY);
+                        }
+                        else
+                        {
+                            HAL_UART_Transmit(&huart2,
+                                              (uint8_t*)"\r\nUser database full.\r\n",
+                                              strlen("\r\nUser database full.\r\n"),
+                                              HAL_MAX_DELAY);
+                        }
+
+                        uartMode = UART_MODE_MENU;
+                        memset(newUserName, 0, sizeof(newUserName));
+
+                        ClearScreen();
+                        PrintMenu();
+                    }
                 }
             }
-
-            else
-            {
-            	HAL_UART_Transmit(&huart2, (uint8_t*)"Invalid option. Type 1, 2, or 3 then press ENTER.\r\n", 16, HAL_MAX_DELAY);
-            }
-            LCD_ShowState(accessState);
-
-            // Re-print menu after handling command
-            osDelay(3000);
-            ClearScreen();
-            PrintMenu();
         }
+
         osDelay(10);
     }
 
-  // In case we exit from task loop
-  osThreadTerminate(NULL);
+    osThreadTerminate(NULL);
   /* USER CODE END 5 */
 }
 
@@ -899,74 +1162,66 @@ void ButtonTask(void *argument)
 /* USER CODE END Header_KeyboardInput */
 void KeyboardInput(void *argument)
 {
-  /* USER CODE BEGIN KeyboardInput */
+    char pin[PIN_LENGTH + 1] = {0};
+    uint8_t idx = 0;
 
-	char pin[PIN_LENGTH + 1] = {0};
-	uint8_t idx = 0;
-
-    //const char *banner = "Enter 4-digit PIN on keypad. #=Enter, *=Clear\r\n> ";
-    //HAL_UART_Transmit(&huart2, (uint8_t*)banner, strlen(banner), HAL_MAX_DELAY);
-
-  /* Infinite loop */
     for (;;)
     {
+        if (lockoutActive)
+        {
+            osDelay(100);
+            continue;
+        }
 
         char key = scan_keypad();
 
-        if (key != 99)  // 99 = no key pressed (your function)
+        if (key != 99)
         {
-        	//lcd_clear();
-        	//lcd_put_cur(0, 0);
-        	//lcd_send_string("ENTER PIN:");
             if (key >= '0' && key <= '9')
             {
+                if (!enteringPin)
+                {
+                    enteringPin = 1;
+                    idx = 0;
+                    memset(pin, 0, sizeof(pin));
+                }
+
                 if (idx < PIN_LENGTH)
                 {
                     pin[idx++] = key;
                     pin[idx] = '\0';
-
-                    // mask output
-                   // HAL_UART_Transmit(&huart2, (uint8_t*)"*", 1, HAL_MAX_DELAY);
-                    //lcd_put_cur(0, 1);
-                    //lcd_send_string("*");
+                    LCD_ShowMaskedPin(idx);
                 }
             }
             else if (key == '*')
             {
                 idx = 0;
                 memset(pin, 0, sizeof(pin));
-               // HAL_UART_Transmit(&huart2, (uint8_t*)"\r\nCleared\r\n> ",
-                                //  strlen("\r\nCleared\r\n> "),
-                               //   HAL_MAX_DELAY);
+                enteringPin = 1;
+                LCD_ShowMaskedPin(0);
             }
             else if (key == '#')
             {
                 if (idx == PIN_LENGTH)
                 {
-                    // Only write the shared globals when we're ready to submit
                     strcpy(pin_entered, pin);
                     pin_ready = 1;
-
-                   // HAL_UART_Transmit(&huart2, (uint8_t*)"\r\nPIN submitted\r\n> ",
-                      //                strlen("\r\nPIN submitted\r\n> "),
-                        //              HAL_MAX_DELAY);
                 }
+
                 idx = 0;
                 memset(pin, 0, sizeof(pin));
+                enteringPin = 0;
             }
 
-            // wait for release
-            while (scan_keypad() != 99 ) {osDelay(10);}
+            while (scan_keypad() != 99)
+            {
+                osDelay(10);
+            }
             osDelay(50);
-                  //  HAL_UART_Transmit(&huart2, (uint8_t*)"\r\nNeed 4 digits\r\n> ",
-                    //                  strlen("\r\nNeed 4 digits\r\n> "),
-                      //                HAL_MAX_DELAY);
-
         }
 
         osDelay(20);
     }
-  /* USER CODE END KeyboardInput */
 }
 
 
@@ -1028,24 +1283,21 @@ void ServoTask(void *argument)
 /* USER CODE END Header_lcdTask */
 void lcdTask(void *argument)
 {
-  /* USER CODE BEGIN lcdTask */
-  /* Infinite loop */
-  //lcd_init();
+    AccessState_t lastState = (AccessState_t)99;
 
-  AccessState_t lastState = (AccessState_t)99;
+    for(;;)
+    {
+        if (!enteringPin && !lockoutActive)
+        {
+            if (accessState != lastState)
+            {
+                lastState = accessState;
+                LCD_ShowState(accessState);
+            }
+        }
 
-
-  for(;;)
-  {
-	  if (accessState != lastState)
-	  {
-		  lastState = accessState;
-		  LCD_ShowState(lastState);
-	  }
-
-    osDelay(50);
-  }
-  /* USER CODE END lcdTask */
+        osDelay(50);
+    }
 }
 
 /**
