@@ -35,6 +35,7 @@
 #define MAX_NAME_LEN 16
 #define MAX_USERS 10
 #define LOCKOUT_MS 10000   // 10 seconds
+#define AUTO_LOCK_MS 5000
 
 /* USER CODE END PD */
 
@@ -57,6 +58,8 @@ typedef enum
     UART_MODE_ADD_NAME,
     UART_MODE_ADD_PIN
 } UartMode_t;
+
+
 
 /* USER CODE END PTD */
 
@@ -130,6 +133,8 @@ uint32_t lockoutEndTick = 0;
 
 volatile UartMode_t uartMode = UART_MODE_MENU;
 char newUserName[MAX_NAME_LEN + 1] = {0};
+volatile uint8_t autoLockActive = 0;
+uint32_t autoLockEndTick = 0;
 
 
 
@@ -802,6 +807,8 @@ void AccessControlTask(void *argument)
     lcd_clear();
     Db_Init();
 
+    LCD_ShowState(STATE_LOCKED);
+
     // Set LEDs to match default state
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);    // Red ON
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);  // Green OFF
@@ -864,6 +871,32 @@ void AccessControlTask(void *argument)
                 continue;
             }
         }
+        if (autoLockActive && accessState == STATE_UNLOCKED)
+        {
+            if (HAL_GetTick() >= autoLockEndTick)
+            {
+                autoLockActive = 0;
+                accessState = STATE_LOCKED;
+
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);     // Red ON
+                HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);   // Green OFF
+
+                lcd_clear();
+                lcd_put_cur(0, 0);
+                lcd_send_string("AUTO LOCKED");
+                lcd_put_cur(1, 0);
+                lcd_send_string("Door secured");
+
+                HAL_UART_Transmit(&huart2,
+                                  (uint8_t*)"\r\nAuto-lock activated\r\n",
+                                  strlen("\r\nAuto-lock activated\r\n"),
+                                  HAL_MAX_DELAY);
+
+                osDelay(1500);
+                LCD_ShowState(accessState);
+                PrintMenu();
+            }
+        }
 
         // Handle submitted keypad PIN
         if (pin_ready)
@@ -877,6 +910,9 @@ void AccessControlTask(void *argument)
             {
                 failedAttempts = 0;
                 accessState = STATE_UNLOCKED;
+
+                autoLockActive = 1;
+                autoLockEndTick = HAL_GetTick() + AUTO_LOCK_MS;
 
                 HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);     // Green ON
                 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);   // Red OFF
@@ -955,6 +991,8 @@ void AccessControlTask(void *argument)
                 if (strcmp((char*)rx_buffer, "1") == 0)
                 {
                     accessState = STATE_UNLOCKED;
+                    autoLockActive = 1;
+                    autoLockEndTick = HAL_GetTick() + AUTO_LOCK_MS;
 
                     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
                     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_RESET);
@@ -972,6 +1010,7 @@ void AccessControlTask(void *argument)
                 else if (strcmp((char*)rx_buffer, "2") == 0)
                 {
                     accessState = STATE_LOCKED;
+                    autoLockActive = 0;
 
                     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, GPIO_PIN_SET);
                     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
