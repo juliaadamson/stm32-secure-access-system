@@ -13,6 +13,7 @@ Release/
 *.list
 
 # IDE / OS clutter
+.vscode/
 .DS_Store
 Thumbs.db
 
