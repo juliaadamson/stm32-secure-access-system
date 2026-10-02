@@ -5,19 +5,16 @@
  *      Author: Controllerstech
  */
 
-#include <LCD1602.h>
 
 #include "main.h"
 #include "LCD1602.h"
-#include "cmsis_os.h"   // for osDelay (or just include cmsis_os2.h depending)
+#include "cmsis_os.h"  
 
 
 /*********** Define the LCD PINS below ****************/
 
 #define RS_Pin GPIO_PIN_0
 #define RS_GPIO_Port GPIOA
-//#define RW_Pin GPIO_PIN_2
-//#define RW_GPIO_Port GPIOA
 #define EN_Pin GPIO_PIN_4
 #define EN_GPIO_Port GPIOC
 
@@ -47,10 +44,7 @@ void delay (uint16_t us)
 
 void send_to_lcd (char data, int rs)
 {
-	//HAL_GPIO_WritePin(RS_GPIO_Port, RS_Pin, 1);  // rs = 1 for data, rs=0 for command
-
 	HAL_GPIO_WritePin(RS_GPIO_Port, RS_Pin, rs ? GPIO_PIN_SET : GPIO_PIN_RESET);
-
 
 	/* write the data to the respective pin */
 	HAL_GPIO_WritePin(D7_GPIO_Port, D7_Pin, ((data>>3)&0x01));
